@@ -4,7 +4,6 @@ Codex Guardian is a Codex skill for bad connection days.
 
 It helps when Codex reconnects, loses a stream, gets stuck after compaction, reports an unknown conversation, or leaves you unsure what changed before the failure. It does not repair Codex itself. It gives you checkpoints, recovery bundles, health checks, and a cleaner next action so you can continue without guessing.
 
-This README is written for people who use Codex to build quickly and do not want to debug logs by hand.
 
 ## Install for Codex
 
