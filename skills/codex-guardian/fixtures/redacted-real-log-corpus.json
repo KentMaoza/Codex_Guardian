@@ -1,0 +1,173 @@
+{
+  "schema": "codex-guardian.fixture-corpus.v1",
+  "cases": [
+    {
+      "name": "detects desktop unknown conversation",
+      "level": "ERROR",
+      "target": "desktop-log",
+      "message": "2026-06-12T09:48:59.578Z error [electron-message-handler] Received turn/started for unknown conversation conversationId=[REDACTED_ID]",
+      "expect_matches": ["unknown_conversation"],
+      "reject_matches": ["responses_websocket_failure", "websocket_send_failed"]
+    },
+    {
+      "name": "detects stream disconnected before completion",
+      "level": "ERROR",
+      "target": "codex_core::model_client",
+      "message": "stream disconnected before completion conversationId=[REDACTED_ID]",
+      "expect_matches": ["stream_disconnect"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects responses retry stream disconnected warning",
+      "level": "WARN",
+      "target": "codex_core::responses_retry",
+      "message": "session_loop{thread_id=[REDACTED_ID]}:run_turn:run_sampling_request{turn_id=[REDACTED_ID] model=gpt-5.5 cwd=~/Documents/OpenSource}: stream disconnected - retrying sampling request (1/5 in 195ms)...",
+      "expect_matches": ["stream_disconnect"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects startup prewarm badrecordmac tls failure",
+      "level": "WARN",
+      "target": "codex_core::session_startup_prewarm",
+      "message": "startup websocket prewarm setup failed: stream disconnected before completion: received fatal alert: BadRecordMac",
+      "expect_matches": ["stream_disconnect", "tls_handshake_failed"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects websocket send failure",
+      "level": "ERROR",
+      "target": "codex_api::endpoint::responses_websocket",
+      "message": "stream_request:model_client.stream_responses_websocket transport=responses_websocket failed to send websocket request conversationId=[REDACTED_ID]",
+      "expect_matches": ["responses_websocket_failure", "websocket_send_failed"],
+      "reject_matches": ["unknown_conversation"]
+    },
+    {
+      "name": "detects websocket idle timeout",
+      "level": "ERROR",
+      "target": "codex_api::endpoint::responses_websocket",
+      "message": "stream_request:model_client.stream_responses_websocket transport=responses_websocket idle timeout waiting for websocket conversationId=[REDACTED_ID]",
+      "expect_matches": ["responses_websocket_failure", "websocket_idle_timeout"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects websocket closed before response completed",
+      "level": "ERROR",
+      "target": "codex_core::model_client",
+      "message": "stream_request:model_client.stream_responses_websocket websocket closed by server before response.completed conversationId=[REDACTED_ID]",
+      "expect_matches": ["responses_websocket_failure", "websocket_closed"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects broken pipe",
+      "level": "ERROR",
+      "target": "codex_core::model_client",
+      "message": "stream_request:model_client.stream_responses_websocket error: Broken pipe conversationId=[REDACTED_ID]",
+      "expect_matches": ["responses_websocket_failure", "broken_pipe"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects dns resolution failure",
+      "level": "ERROR",
+      "target": "codex_core::model_client",
+      "message": "stream_request:model_client.stream_responses_websocket reqwest error sending request for url https://chatgpt.com/backend-api/codex/responses: dns error: failed to lookup address information conversationId=[REDACTED_ID]",
+      "expect_matches": ["responses_websocket_failure", "dns_resolution_failed"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects tls handshake failure",
+      "level": "ERROR",
+      "target": "codex_core::model_client",
+      "message": "stream_request:model_client.stream_responses_websocket error sending request for url https://chatgpt.com/backend-api/codex/responses: TLS handshake failed: invalid peer certificate conversationId=[REDACTED_ID]",
+      "expect_matches": ["responses_websocket_failure", "tls_handshake_failed"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects connection reset",
+      "level": "ERROR",
+      "target": "codex_core::model_client",
+      "message": "stream_request:model_client.stream_responses_websocket error sending request for url https://chatgpt.com/backend-api/codex/responses: connection reset by peer conversationId=[REDACTED_ID]",
+      "expect_matches": ["responses_websocket_failure", "connection_reset"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects request timeout",
+      "level": "ERROR",
+      "target": "codex_core::model_client",
+      "message": "stream_request:model_client.stream_responses_websocket error sending request for url https://chatgpt.com/backend-api/codex/responses: operation timed out conversationId=[REDACTED_ID]",
+      "expect_matches": ["responses_websocket_failure", "request_timeout"],
+      "reject_matches": ["unknown_conversation", "websocket_send_failed"]
+    },
+    {
+      "name": "detects auth session failure",
+      "level": "ERROR",
+      "target": "codex_core::model_client",
+      "message": "POST /backend-api/codex/responses failed: 401 Unauthorized authentication required conversationId=[REDACTED_ID]",
+      "expect_matches": ["auth_session_failed"],
+      "reject_matches": ["responses_websocket_failure", "websocket_send_failed", "unknown_conversation"]
+    },
+    {
+      "name": "detects remote compaction failure",
+      "level": "ERROR",
+      "target": "codex_core::compact",
+      "message": "Error running remote compact task for conversationId=[REDACTED_ID]",
+      "expect_matches": ["remote_compaction_failed"],
+      "reject_matches": ["responses_websocket_failure"]
+    },
+    {
+      "name": "detects compact endpoint failure",
+      "level": "ERROR",
+      "target": "codex_core::compact",
+      "message": "POST /backend-api/codex/responses/compact failed for conversationId=[REDACTED_ID]",
+      "expect_matches": ["compact_endpoint_failed"],
+      "reject_matches": ["responses_websocket_failure", "unknown_conversation"]
+    },
+    {
+      "name": "detects mcp request timeout",
+      "level": "ERROR",
+      "target": "mcp_client",
+      "message": "mcp_request_timeout while waiting for tool response requestId=[REDACTED_ID]",
+      "expect_matches": ["mcp_request_timeout"],
+      "reject_matches": ["responses_websocket_failure", "websocket_send_failed"]
+    },
+    {
+      "name": "detects turn start timeout",
+      "level": "ERROR",
+      "target": "codex_core::session",
+      "message": "turn/start timeout while waiting for conversationId=[REDACTED_ID]",
+      "expect_matches": ["turn_start_timeout"],
+      "reject_matches": ["responses_websocket_failure", "websocket_send_failed"]
+    },
+    {
+      "name": "detects no progress loop",
+      "level": "WARN",
+      "target": "codex_guardian",
+      "message": "No progress loop: reread the same files repeatedly without edits",
+      "expect_matches": ["no_progress_loop"],
+      "reject_matches": ["responses_websocket_failure", "unknown_conversation"]
+    },
+    {
+      "name": "ignores streamed assistant quote",
+      "level": "TRACE",
+      "target": "codex_api::endpoint::responses_websocket",
+      "message": "websocket event: {\"type\":\"response.output_text.delta\",\"delta\":\"The earlier diagnostic mentioned failed to send websocket request and unknown conversation.\"}",
+      "expect_matches": [],
+      "reject_matches": ["responses_websocket_failure", "websocket_send_failed", "unknown_conversation"]
+    },
+    {
+      "name": "ignores outbound response.create payload",
+      "level": "TRACE",
+      "target": "codex_api::endpoint::responses_websocket",
+      "message": "websocket request: {\"type\":\"response.create\",\"instructions\":\"User pasted failed to send websocket request and unknown conversation as text to classify.\"}",
+      "expect_matches": [],
+      "reject_matches": ["responses_websocket_failure", "websocket_send_failed", "unknown_conversation"]
+    },
+    {
+      "name": "ignores app server goal payload quoting recovery terms",
+      "level": "INFO",
+      "target": "codex_otel.log_only",
+      "message": "app_server.request{otel.kind=\"server\" otel.name=\"thread/goal/set\" rpc.system=\"jsonrpc\" rpc.method=\"thread/goal/set\" app_server.client_name=\"Codex Desktop\"}:turn{otel.name=\"session_task.turn\" thread.id=[REDACTED_ID] turn.id=[REDACTED_ID] codex.turn.token_usage.input_tokens=123}: objective=\"automatic preflight checkpoint before long tasks, no-progress loops, stream disconnected before completion, failed to send websocket request, and unknown conversation\"",
+      "expect_matches": [],
+      "reject_matches": ["no_progress_loop", "stream_disconnect", "responses_websocket_failure", "websocket_send_failed", "unknown_conversation"]
+    }
+  ]
+}

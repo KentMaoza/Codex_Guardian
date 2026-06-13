@@ -1,0 +1,27 @@
+{
+  "skill": "codex-guardian",
+  "created_at": "2026-06-13T07:19:53+00:00",
+  "archive": "codex-guardian.tar.gz",
+  "archive_sha256": "3602f6eeec0ade1c7ead58707f783f4ae85c1f40c1e812895f52fa3318663900",
+  "file_count": 8,
+  "required_files": [
+    "codex-guardian/SKILL.md",
+    "codex-guardian/scripts/codex_guardian.py",
+    "codex-guardian/scripts/diagnose_codex_streams.py",
+    "codex-guardian/fixtures/redacted-real-log-corpus.json",
+    "codex-guardian/references/failure-taxonomy.md",
+    "codex-guardian/references/privacy-redaction.md",
+    "codex-guardian/references/recovery-prompts.md"
+  ],
+  "missing_required_files": [],
+  "files": [
+    "codex-guardian/SKILL.md",
+    "codex-guardian/agents/openai.yaml",
+    "codex-guardian/fixtures/redacted-real-log-corpus.json",
+    "codex-guardian/references/failure-taxonomy.md",
+    "codex-guardian/references/privacy-redaction.md",
+    "codex-guardian/references/recovery-prompts.md",
+    "codex-guardian/scripts/codex_guardian.py",
+    "codex-guardian/scripts/diagnose_codex_streams.py"
+  ]
+}

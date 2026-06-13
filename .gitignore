@@ -1,0 +1,14 @@
+.DS_Store
+.codex/
+.agents/
+.codex-guardian/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+auth.json
+sessions/
+archived_sessions/
+memories/
+__pycache__/
+*.pyc

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Codex Guardian"
+  short_description: "Recover Codex streams safely"
+  default_prompt: "Use $codex-guardian to self-test, package, watch Codex stream failures, write a recovery bundle, and resume from checkpoints."
+policy:
+  allow_implicit_invocation: true
