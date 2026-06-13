@@ -539,6 +539,116 @@ class CodexGuardianTests(unittest.TestCase):
             self.assertIsNone(report["checkpoint_path"])
             self.assertFalse((project / ".codex-guardian" / "current.json").exists())
 
+    def test_autocast_both_writes_preflight_and_recovery_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            project.mkdir()
+            (project / "target.txt").write_text("ready\n", encoding="utf-8")
+            codex_home = Path(tmp) / "codex-home"
+            fake_home = Path(tmp) / "home"
+            fake_home.mkdir()
+            write_sqlite_log(codex_home, ["failed to send websocket request"])
+
+            result = run_cli(
+                "autocast",
+                "--codex-home",
+                str(codex_home),
+                "--project",
+                str(project),
+                "--mode",
+                "both",
+                "--task",
+                "Guard active work",
+                "--next-action",
+                "Edit target.txt",
+                "--estimated-minutes",
+                "20",
+                "--threshold-minutes",
+                "10",
+                "--slice-minutes",
+                "8",
+                "--touched",
+                "target.txt",
+                "--hours",
+                "1",
+                "--format",
+                "json",
+                env={"HOME": str(fake_home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+            )
+
+            self.assertEqual(result.returncode, 1, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["schema"], "codex-guardian.autocast.v1")
+            self.assertTrue(report["created_preflight_checkpoint"])
+            self.assertTrue(report["created_recovery_bundle"])
+            self.assertTrue(report["needs_attention"])
+            self.assertTrue(report["before_task"]["created_preflight_checkpoint"])
+            self.assertEqual(report["after_reconnect"]["health"]["issue_type"], "transport")
+            self.assertTrue(report["after_reconnect"]["doctor"]["created_recovery_bundle"])
+            bundle = Path(report["after_reconnect"]["recovery_report"])
+            self.assertTrue((bundle / "README.md").exists())
+            self.assertTrue((bundle / "doctor.md").exists())
+            bundled_checkpoint = json.loads((bundle / "checkpoint.json").read_text(encoding="utf-8"))
+            self.assertEqual(bundled_checkpoint["task"], "Guard active work")
+            self.assertEqual(bundled_checkpoint["slice_minutes"], 8)
+
+    def test_autocast_before_task_only_skips_reconnect_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            project.mkdir()
+
+            result = run_cli(
+                "autocast",
+                "--project",
+                str(project),
+                "--mode",
+                "before-task",
+                "--task",
+                "Small guarded task",
+                "--next-action",
+                "Answer directly",
+                "--estimated-minutes",
+                "4",
+                "--threshold-minutes",
+                "10",
+                "--format",
+                "json",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertFalse(report["created_preflight_checkpoint"])
+            self.assertFalse(report["created_recovery_bundle"])
+            self.assertFalse(report["needs_attention"])
+            self.assertIn("before_task", report)
+            self.assertNotIn("after_reconnect", report)
+
+    def test_integration_template_outputs_autocast_and_watcher_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            project.mkdir()
+            skill_path = Path(tmp) / "skills" / "codex-guardian"
+
+            result = run_cli(
+                "integration-template",
+                "--project",
+                str(project),
+                "--skill-path",
+                str(skill_path),
+                "--format",
+                "json",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            commands = "\n".join(item["command"] for item in report["commands"])
+            self.assertEqual(report["schema"], "codex-guardian.integration-template.v1")
+            self.assertIn("autocast", commands)
+            self.assertIn("--mode before-task", commands)
+            self.assertIn("--mode after-reconnect", commands)
+            self.assertIn("watch --project", commands)
+            self.assertIn("does not edit Codex app hook", report["integration_boundary"])
+
     def test_resume_prompt_limits_context_to_touched_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"
@@ -596,6 +706,8 @@ class CodexGuardianTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             fake_home = Path(tmp) / "home"
             codex_home = Path(tmp) / "codex-home"
+            project = Path(tmp) / "project"
+            project.mkdir()
             today = time.strftime("%Y/%m/%d")
             log_dir = fake_home / "Library" / "Logs" / "com.openai.codex" / today
             log_dir.mkdir(parents=True)
@@ -609,6 +721,8 @@ class CodexGuardianTests(unittest.TestCase):
                 "watch",
                 "--codex-home",
                 str(codex_home),
+                "--project",
+                str(project),
                 "--hours",
                 "1",
                 "--once",

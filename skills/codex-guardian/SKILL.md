@@ -26,6 +26,8 @@ Use the smallest layer that fits the problem:
 - **Connection triage boundary**: run `scripts/codex_guardian.py connection-triage --project . --hours 1` when you need local recovery actions, recovery attention, and an explicit direct-fix boundary. Add `--check-reachability` when the same boundary report needs live DNS and HTTP/TLS evidence, and `--check-service-status` when it needs upstream status evidence.
 - **Current recovery state**: run `scripts/codex_guardian.py status --project . --hours 1` to summarize health, checkpoint, latest bundle, restart marker, and post-restart state.
 - **One-step recovery decision**: run `scripts/codex_guardian.py doctor --project . --hours 1` when you want the health classification, overdue-checkpoint check, recovery bundle, and next local actions in one report. Add `--check-reachability` when logs are quiet but Codex still cannot connect. Add `--check-service-status` when upstream service status should affect the same decision. Add `--mark-restart` when you are about to follow a restart recommendation and want the post-restart check seeded automatically.
+- **Autocast before or after reconnect**: run `scripts/codex_guardian.py autocast --project . --mode both --task "..." --next-action "..." --estimated-minutes N` when you want automatic preflight plus doctor-grade reconnect recovery in one bounded command. Use `--mode before-task` before long work and `--mode after-reconnect` after a reconnect, restart, stalled stream, or unknown-conversation event.
+- **Integration template**: run `scripts/codex_guardian.py integration-template --project .` to print copy-paste commands for startup, reconnect recovery, one-shot hook use, and the optional background watcher.
 - **Fast diagnosis**: run `scripts/diagnose_codex_streams.py` or `scripts/codex_guardian.py diagnose`.
 - **Fixture soak test**: run `scripts/codex_guardian.py self-test` before trusting a changed install.
 - **Local validation**: run `scripts/codex_guardian.py validate-skill` to check required files and frontmatter when PyYAML is unavailable.
@@ -67,6 +69,19 @@ python3 skills/codex-guardian/scripts/codex_guardian.py auto-preflight \
 ```
 
 It writes the same `preflight_done` checkpoint when the estimate is at or above `--threshold-minutes`, defaulting to 10. For shorter tasks it reports that no checkpoint was created and leaves the current checkpoint untouched. Use `--force` when a short task still has high recovery cost.
+
+Use `autocast` when one command should handle both preflight and reconnect recovery:
+
+```bash
+python3 skills/codex-guardian/scripts/codex_guardian.py autocast \
+  --project . \
+  --mode both \
+  --task "Fix reconnect recovery docs" \
+  --next-action "Edit one named file and verify it" \
+  --estimated-minutes 20
+```
+
+`autocast --mode before-task` only runs the automatic preflight step. `autocast --mode after-reconnect` only runs doctor-grade reconnect recovery and returns nonzero when recovery attention is needed. Use `references/codex-integration.md` or `integration-template` when wiring the command into a project script, startup habit, or future Codex hook/plugin layer.
 
 For long tasks, work in 10 to 15 minute slices. Each slice must end with one of:
 
@@ -210,6 +225,8 @@ When `--check-service-status` makes `watch` actionable and `--recovery-report` i
 If project recovery status is what makes `watch` actionable, the report includes the same `status` object, and the recovery bundle includes `status.md`, `status.json`, `connection-triage.md`, and `connection-triage.json`.
 When repeated app-state failures make `restart_codex_now` true and `--mark-restart` is set, `watch` also writes `.codex-guardian/restart-marker.json` so `post-restart` can verify the restart afterward. It does not mark restart for transport-only failures.
 Restart markers written by `watch`, `bundle`, or `doctor` include the source command, issue type, restart timing, and restart reason from the health decision or post-restart status decision.
+
+To run the watcher as an optional background guard, leave off `--once` and keep it in a terminal you intend to keep open. Do not start the watcher silently from the skill. For hook-like use, prefer `watch --once --doctor --mark-restart` or `autocast --mode after-reconnect` so the caller gets a bounded exit code.
 
 To write the same bundle on demand:
 

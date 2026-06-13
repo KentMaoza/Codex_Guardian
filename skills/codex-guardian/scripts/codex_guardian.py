@@ -16,6 +16,7 @@ import os
 import platform
 from pathlib import Path
 import re
+import shlex
 import shutil
 import socket
 import ssl
@@ -52,6 +53,7 @@ REQUIRED_SKILL_FILES = [
     "scripts/diagnose_codex_streams.py",
     "fixtures/redacted-real-log-corpus.json",
     "references/failure-taxonomy.md",
+    "references/codex-integration.md",
     "references/privacy-redaction.md",
     "references/recovery-prompts.md",
 ]
@@ -2389,34 +2391,50 @@ def cmd_recover_now(args: argparse.Namespace) -> int:
     return cmd_bundle(bundle_args)
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
-    codex_home = Path(args.codex_home).expanduser() if args.codex_home else default_codex_home()
-    project = Path(args.project).expanduser().resolve()
-    report = build_report(codex_home, args.hours, args.limit)
+def build_doctor_report(
+    codex_home: Path,
+    project: Path,
+    hours: int,
+    limit: int,
+    *,
+    task: Optional[str] = None,
+    touched: Optional[list[str]] = None,
+    slice_minutes: int = 15,
+    mark_restart: bool = False,
+    check_reachability: bool = False,
+    reachability_endpoint: str = DEFAULT_REACHABILITY_ENDPOINT,
+    reachability_timeout: float = 5.0,
+    reachability_dns_only: bool = False,
+    check_service_status: bool = False,
+    service_status_endpoint: str = DEFAULT_SERVICE_STATUS_ENDPOINT,
+    service_status_timeout: float = 5.0,
+    source_command: str = "doctor",
+) -> tuple[dict[str, Any], bool]:
+    report = build_report(codex_home, hours, limit)
     report["health"] = health_assessment(report["summary"])
-    status_report = build_status_report(codex_home, project, args.hours, args.limit)
+    status_report = build_status_report(codex_home, project, hours, limit)
     reachability_report = None
-    if args.check_reachability:
-        reachability_report = build_reachability_report(args.reachability_endpoint, args.reachability_timeout, args.reachability_dns_only)
+    if check_reachability:
+        reachability_report = build_reachability_report(reachability_endpoint, reachability_timeout, reachability_dns_only)
         report["reachability"] = reachability_report
     service_status_report = None
-    if args.check_service_status:
-        service_status_report = build_service_status_report(args.service_status_endpoint, args.service_status_timeout)
+    if check_service_status:
+        service_status_report = build_service_status_report(service_status_endpoint, service_status_timeout)
         report["service_status"] = service_status_report
     _, checkpoint_attention = read_current_checkpoint(project)
     if checkpoint_attention.get("checkpoint_overdue") or checkpoint_attention.get("checkpoint_read_error"):
         report["checkpoint_attention"] = checkpoint_attention
     checkpoint_path = None
-    if args.task:
+    if task:
         checkpoint_path = write_preflight_checkpoint(
             project,
-            args.task,
-            args.touched or [],
-            args.slice_minutes,
+            task,
+            touched or [],
+            slice_minutes,
             "Use doctor recovery bundle and resume safely",
         )
         report["preflight_checkpoint"] = str(checkpoint_path)
-        status_report = build_status_report(codex_home, project, args.hours, args.limit)
+        status_report = build_status_report(codex_home, project, hours, limit)
     needs_attention = (
         report["health"]["status"] != "ok"
         or bool(checkpoint_attention.get("checkpoint_overdue"))
@@ -2427,8 +2445,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     )
     marker_context = status_restart_marker_context(status_report["status"])
     marker_path = None
-    if args.mark_restart and (doctor_restart_recommended(report["health"]) or marker_context):
-        marker_path = attach_restart_marker(project, report, "doctor", marker_context)
+    if mark_restart and (doctor_restart_recommended(report["health"]) or marker_context):
+        marker_path = attach_restart_marker(project, report, source_command, marker_context)
     bundle_path = None
     if needs_attention:
         bundle_path = write_recovery_report(project, report)
@@ -2449,12 +2467,40 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ),
     }
     if bundle_path:
-        status_report = build_status_report(codex_home, project, args.hours, args.limit)
+        status_report = build_status_report(codex_home, project, hours, limit)
         report["status"] = status_report["status"]
         if not service_status_report:
-            service_status_report = build_service_status_report(args.service_status_endpoint, args.service_status_timeout)
+            service_status_report = build_service_status_report(service_status_endpoint, service_status_timeout)
             report["service_status"] = service_status_report
-        write_doctor_files(bundle_path, report, args.hours, status_report)
+        write_doctor_files(bundle_path, report, hours, status_report)
+    return report, needs_attention
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    codex_home = Path(args.codex_home).expanduser() if args.codex_home else default_codex_home()
+    project = Path(args.project).expanduser().resolve()
+    try:
+        report, needs_attention = build_doctor_report(
+            codex_home,
+            project,
+            args.hours,
+            args.limit,
+            task=args.task,
+            touched=args.touched or [],
+            slice_minutes=args.slice_minutes,
+            mark_restart=args.mark_restart,
+            check_reachability=args.check_reachability,
+            reachability_endpoint=args.reachability_endpoint,
+            reachability_timeout=args.reachability_timeout,
+            reachability_dns_only=args.reachability_dns_only,
+            check_service_status=args.check_service_status,
+            service_status_endpoint=args.service_status_endpoint,
+            service_status_timeout=args.service_status_timeout,
+            source_command="doctor",
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     write_output(render_doctor_report(report, args.format), args.output)
     return 0 if not needs_attention else 1
 
@@ -2809,6 +2855,300 @@ def cmd_auto_preflight(args: argparse.Namespace) -> int:
         force=args.force,
     )
     write_output(render_auto_preflight_report(report, args.format), args.output)
+    return 0
+
+
+def autocast_actions(report: dict[str, Any]) -> list[str]:
+    actions: list[str] = []
+    before = report.get("before_task") or {}
+    if before:
+        if before.get("created_preflight_checkpoint"):
+            actions.append(f"Preflight checkpoint ready: {before['checkpoint_path']}")
+            actions.append("Continue in the named slice and checkpoint again before broad context or risky edits.")
+        else:
+            actions.append("Preflight checkpoint was skipped because the task estimate stayed below the threshold.")
+    after = report.get("after_reconnect") or {}
+    doctor = after.get("doctor") or {}
+    if doctor:
+        if doctor.get("created_recovery_bundle"):
+            actions.append(f"Open recovery bundle README first: {after.get('recovery_report')}")
+        else:
+            actions.append("No recovery bundle was needed from the sampled Codex logs and recovery state.")
+        for action in doctor.get("actions", [])[:6]:
+            if action not in actions:
+                actions.append(action)
+    return actions or ["No autocast action was required."]
+
+
+def build_autocast_report(
+    codex_home: Path,
+    project: Path,
+    *,
+    mode: str,
+    task: str,
+    next_action: str,
+    touched: list[str],
+    estimated_minutes: int,
+    threshold_minutes: int,
+    slice_minutes: int,
+    force_preflight: bool,
+    hours: int,
+    limit: int,
+    mark_restart: bool,
+    check_reachability: bool,
+    reachability_endpoint: str,
+    reachability_timeout: float,
+    reachability_dns_only: bool,
+    check_service_status: bool,
+    service_status_endpoint: str,
+    service_status_timeout: float,
+) -> tuple[dict[str, Any], bool]:
+    report: dict[str, Any] = {
+        "schema": "codex-guardian.autocast.v1",
+        "generated_at": now_utc(),
+        "project": str(project),
+        "codex_home": redact(str(codex_home)),
+        "mode": mode,
+        "task": task,
+        "next_action": next_action,
+        "estimated_minutes": estimated_minutes,
+        "threshold_minutes": threshold_minutes,
+        "slice_minutes": slice_minutes,
+        "check_reachability": check_reachability,
+        "check_service_status": check_service_status,
+    }
+    if mode in {"before-task", "both"}:
+        report["before_task"] = build_auto_preflight_report(
+            project=project,
+            task=task,
+            next_action=next_action,
+            touched=touched,
+            estimated_minutes=estimated_minutes,
+            threshold_minutes=threshold_minutes,
+            slice_minutes=slice_minutes,
+            force=force_preflight,
+        )
+
+    needs_attention = False
+    if mode in {"after-reconnect", "both"}:
+        doctor_task = task if mode == "after-reconnect" else None
+        doctor_report, needs_attention = build_doctor_report(
+            codex_home,
+            project,
+            hours,
+            limit,
+            task=doctor_task,
+            touched=touched,
+            slice_minutes=slice_minutes,
+            mark_restart=mark_restart,
+            check_reachability=check_reachability,
+            reachability_endpoint=reachability_endpoint,
+            reachability_timeout=reachability_timeout,
+            reachability_dns_only=reachability_dns_only,
+            check_service_status=check_service_status,
+            service_status_endpoint=service_status_endpoint,
+            service_status_timeout=service_status_timeout,
+            source_command="autocast",
+        )
+        report["after_reconnect"] = doctor_report
+    report["needs_attention"] = needs_attention
+    report["created_preflight_checkpoint"] = bool(
+        (report.get("before_task") or {}).get("created_preflight_checkpoint")
+        or (report.get("after_reconnect") or {}).get("doctor", {}).get("created_preflight_checkpoint")
+    )
+    report["created_recovery_bundle"] = bool((report.get("after_reconnect") or {}).get("doctor", {}).get("created_recovery_bundle"))
+    report["actions"] = autocast_actions(report)
+    return report, needs_attention
+
+
+def render_autocast_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        "# Codex Guardian Autocast",
+        "",
+        f"- Generated: {report['generated_at']}",
+        f"- Project: `{report['project']}`",
+        f"- Mode: `{report['mode']}`",
+        f"- Created preflight checkpoint: `{str(report['created_preflight_checkpoint']).lower()}`",
+        f"- Created recovery bundle: `{str(report['created_recovery_bundle']).lower()}`",
+        f"- Needs attention: `{str(report['needs_attention']).lower()}`",
+    ]
+    before = report.get("before_task")
+    if before:
+        lines += [
+            "",
+            "## Before Task",
+            "",
+            f"- Task: {before['task']}",
+            f"- Reason: `{before['reason']}`",
+            f"- Checkpoint: `{before.get('checkpoint_path') or 'none'}`",
+            f"- Next action: {before['next_action']}",
+        ]
+    after = report.get("after_reconnect")
+    if after:
+        health = after.get("health") or {}
+        doctor = after.get("doctor") or {}
+        lines += [
+            "",
+            "## After Reconnect",
+            "",
+            f"- Issue type: `{health.get('issue_type', 'unknown')}`",
+            f"- Restart Codex now: `{str(health.get('restart_codex_now', False)).lower()}`",
+            f"- Recovery bundle: `{after.get('recovery_report') or 'none'}`",
+            f"- Doctor bundle created: `{str(doctor.get('created_recovery_bundle', False)).lower()}`",
+        ]
+    lines += ["", "## Actions", ""]
+    for action in report["actions"]:
+        lines.append(f"- {action}")
+    return "\n".join(lines) + "\n"
+
+
+def render_autocast_report(report: dict[str, Any], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, indent=2, ensure_ascii=False) + "\n"
+    return render_autocast_markdown(report)
+
+
+def cmd_autocast(args: argparse.Namespace) -> int:
+    codex_home = Path(args.codex_home).expanduser() if args.codex_home else default_codex_home()
+    project = Path(args.project).expanduser().resolve()
+    try:
+        report, needs_attention = build_autocast_report(
+            codex_home,
+            project,
+            mode=args.mode,
+            task=args.task,
+            next_action=args.next_action,
+            touched=args.touched or [],
+            estimated_minutes=args.estimated_minutes,
+            threshold_minutes=args.threshold_minutes,
+            slice_minutes=args.slice_minutes,
+            force_preflight=args.force_preflight,
+            hours=args.hours,
+            limit=args.limit,
+            mark_restart=args.mark_restart,
+            check_reachability=args.check_reachability,
+            reachability_endpoint=args.reachability_endpoint,
+            reachability_timeout=args.reachability_timeout,
+            reachability_dns_only=args.reachability_dns_only,
+            check_service_status=args.check_service_status,
+            service_status_endpoint=args.service_status_endpoint,
+            service_status_timeout=args.service_status_timeout,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    write_output(render_autocast_report(report, args.format), args.output)
+    return 1 if needs_attention else 0
+
+
+def build_integration_template_report(project: Path, skill_path: Path) -> dict[str, Any]:
+    cli = f"python3 {shlex.quote(str(skill_path / 'scripts' / 'codex_guardian.py'))}"
+    project_arg = shlex.quote(str(project))
+    return {
+        "schema": "codex-guardian.integration-template.v1",
+        "generated_at": now_utc(),
+        "project": str(project),
+        "skill_command": cli,
+        "integration_boundary": (
+            "Codex Guardian provides portable commands for startup hooks, project scripts, and manual recovery. "
+            "It does not edit Codex app hook or plugin config automatically."
+        ),
+        "commands": [
+            {
+                "name": "before-task autocast",
+                "when": "Run before long or risky Codex work.",
+                "command": (
+                    f"{cli} autocast --project {project_arg} --mode before-task "
+                    "--task \"Describe the Codex task\" "
+                    "--next-action \"Inspect the target files first\" "
+                    "--estimated-minutes 20"
+                ),
+            },
+            {
+                "name": "after-reconnect autocast",
+                "when": "Run after a reconnect, restart, stalled stream, or unknown-conversation event.",
+                "command": (
+                    f"{cli} autocast --project {project_arg} --mode after-reconnect "
+                    "--task \"Recover the interrupted Codex task\" "
+                    "--next-action \"Open the recovery bundle first\" "
+                    "--check-reachability --check-service-status"
+                ),
+            },
+            {
+                "name": "combined autocast",
+                "when": "Run when you want preflight and reconnect recovery in one bounded command.",
+                "command": (
+                    f"{cli} autocast --project {project_arg} --mode both "
+                    "--task \"Guard this Codex task\" "
+                    "--next-action \"Continue in one small verified slice\" "
+                    "--estimated-minutes 20 --check-reachability --check-service-status"
+                ),
+            },
+            {
+                "name": "optional background watcher",
+                "when": "Run only when you intentionally want a long-lived watcher in a terminal.",
+                "command": (
+                    f"{cli} watch --project {project_arg} --doctor --mark-restart "
+                    "--check-reachability --check-service-status"
+                ),
+            },
+            {
+                "name": "one-shot watcher",
+                "when": "Use in scripts or hooks that must return quickly.",
+                "command": (
+                    f"{cli} watch --project {project_arg} --once --doctor --mark-restart "
+                    "--check-reachability --check-service-status"
+                ),
+            },
+        ],
+        "notes": [
+            "Use before-task autocast at project startup or before a large Codex prompt.",
+            "Use after-reconnect autocast immediately after reconnecting or restarting Codex.",
+            "Use the background watcher only from a terminal you are comfortable leaving open.",
+            "If a future Codex hook or plugin schema is available, wire these commands to that hook instead of rewriting Guardian internals.",
+        ],
+    }
+
+
+def render_integration_template_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        "# Codex Guardian Integration Template",
+        "",
+        f"- Generated: {report['generated_at']}",
+        f"- Project: `{report['project']}`",
+        f"- Boundary: {report['integration_boundary']}",
+        "",
+        "## Commands",
+        "",
+    ]
+    for command in report["commands"]:
+        lines += [
+            f"### {command['name']}",
+            "",
+            command["when"],
+            "",
+            "```bash",
+            command["command"],
+            "```",
+            "",
+        ]
+    lines += ["## Notes", ""]
+    for note in report["notes"]:
+        lines.append(f"- {note}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_integration_template_report(report: dict[str, Any], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(report, indent=2, ensure_ascii=False) + "\n"
+    return render_integration_template_markdown(report)
+
+
+def cmd_integration_template(args: argparse.Namespace) -> int:
+    project = Path(args.project).expanduser().resolve()
+    skill_path = Path(args.skill_path).expanduser() if args.skill_path else default_codex_home() / "skills" / "codex-guardian"
+    report = build_integration_template_report(project, skill_path)
+    write_output(render_integration_template_report(report, args.format), args.output)
     return 0
 
 
@@ -3930,6 +4270,46 @@ def build_parser() -> argparse.ArgumentParser:
     auto_preflight.add_argument("--format", choices=["markdown", "json"], default="markdown")
     auto_preflight.add_argument("--output", default=None, help="Write auto-preflight report to this file")
     auto_preflight.set_defaults(func=cmd_auto_preflight)
+
+    autocast = sub.add_parser("autocast", help="Run automatic preflight and reconnect recovery in one bounded command")
+    autocast.add_argument("--codex-home", default=None, help="Codex home directory, default: CODEX_HOME or ~/.codex")
+    autocast.add_argument("--project", default=".", help="Project directory")
+    autocast.add_argument("--mode", choices=["before-task", "after-reconnect", "both"], default="both", help="Autocast phase to run")
+    autocast.add_argument("--task", default="Codex Guardian guarded task", help="Task name for checkpoint and recovery context")
+    autocast.add_argument("--next-action", default="Continue in one small verified slice", help="Next intended action for preflight")
+    autocast.add_argument("--estimated-minutes", type=int, default=15, help="Estimated task duration in minutes")
+    autocast.add_argument("--threshold-minutes", type=int, default=10, help="Minimum estimate that should trigger preflight")
+    autocast.add_argument("--slice-minutes", type=int, default=15, help="Minutes until next explicit checkpoint")
+    autocast.add_argument("--touched", action="append", help="Touched or relevant file path for checkpointing")
+    autocast.add_argument("--force-preflight", action="store_true", help="Write preflight even below the estimate threshold")
+    autocast.add_argument("--hours", type=int, default=1, help="Lookback window in hours for reconnect recovery")
+    autocast.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="Maximum matched events")
+    autocast.add_argument("--mark-restart", action="store_true", help="Write a restart marker when recovery recommends restarting Codex")
+    autocast.add_argument("--check-reachability", action="store_true", help="Probe Codex endpoint reachability during reconnect recovery")
+    autocast.add_argument(
+        "--reachability-endpoint",
+        default=DEFAULT_REACHABILITY_ENDPOINT,
+        help=f"HTTP(S) endpoint to probe when --check-reachability is set, default: {DEFAULT_REACHABILITY_ENDPOINT}",
+    )
+    autocast.add_argument("--reachability-timeout", type=float, default=5.0, help="Reachability probe timeout in seconds")
+    autocast.add_argument("--reachability-dns-only", action="store_true", help="When checking reachability, skip HTTP/TLS and only probe DNS")
+    autocast.add_argument("--check-service-status", action="store_true", help="Probe upstream service status during reconnect recovery")
+    autocast.add_argument(
+        "--service-status-endpoint",
+        default=DEFAULT_SERVICE_STATUS_ENDPOINT,
+        help=f"Statuspage JSON endpoint to probe when --check-service-status is set, default: {DEFAULT_SERVICE_STATUS_ENDPOINT}",
+    )
+    autocast.add_argument("--service-status-timeout", type=float, default=5.0, help="Service status probe timeout in seconds")
+    autocast.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    autocast.add_argument("--output", default=None, help="Write autocast report to this file")
+    autocast.set_defaults(func=cmd_autocast)
+
+    integration_template = sub.add_parser("integration-template", help="Print copy-paste commands for startup, reconnect, and watcher integration")
+    integration_template.add_argument("--project", default=".", help="Project directory to include in generated commands")
+    integration_template.add_argument("--skill-path", default=None, help="Installed skill path, default: ~/.codex/skills/codex-guardian")
+    integration_template.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    integration_template.add_argument("--output", default=None, help="Write integration template to this file")
+    integration_template.set_defaults(func=cmd_integration_template)
 
     checkpoint = sub.add_parser("checkpoint", help="Write a durable project checkpoint")
     add_checkpoint_args(checkpoint)
