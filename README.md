@@ -1,275 +1,322 @@
-# Codex Guardian Skill
+# Codex Guardian
 
-Codex Guardian helps recover from Codex reconnect loops, WebSocket stream failures, remote compaction failures, app sidecar stalls, and ambiguous long-task state.
+Codex Guardian is a Codex skill for bad connection days.
 
-It ships as an Agent Skill with three layers:
+It helps when Codex reconnects, loses a stream, gets stuck after compaction, reports an unknown conversation, or leaves you unsure what changed before the failure. It does not repair Codex itself. It gives you checkpoints, recovery bundles, health checks, and a cleaner next action so you can continue without guessing.
 
-- Project-local skill workflow: `skills/codex-guardian/SKILL.md`
-- Watch and diagnostic script: `skills/codex-guardian/scripts/diagnose_codex_streams.py`
-- Full recovery CLI: `skills/codex-guardian/scripts/codex_guardian.py`
+This README is written for people who use Codex to build quickly and do not want to debug logs by hand.
 
-## Quick Start
+## Install for Codex
 
-Run a one-shot watcher:
+Copy this block into Terminal:
 
 ```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py watch --once --hours 1
+git clone https://github.com/KentMaoza/Codex_Guardian.git
+cd Codex_Guardian
+python3 skills/codex-guardian/scripts/codex_guardian.py install-check --install
+python3 skills/codex-guardian/scripts/codex_guardian.py install-check
 ```
 
-The watcher exits nonzero for high-severity stream or compaction failures, no-progress loops, repeated app-state failures that require restart, unreadable or overdue active checkpoints, failed local reachability probes when `--check-reachability` is set, and degraded upstream status when `--check-service-status` is set. Failed service-status checks stay `unknown` and do not make watch actionable by themselves. Watch output and recovery bundles include the health block behind that decision, including in `diagnosis.md`.
-
-Write a recovery bundle when the watcher finds a failure:
+If you already installed an older copy and want to replace it:
 
 ```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py watch \
-  --once \
-  --hours 1 \
+python3 skills/codex-guardian/scripts/codex_guardian.py install-check --install --force
+```
+
+That installs the skill into:
+
+```text
+~/.codex/skills/codex-guardian
+```
+
+If Codex is already open, start a new Codex session after installing so the skill can be loaded for new work.
+
+If you prefer the release archive instead of `git clone`:
+
+```bash
+curl -L https://github.com/KentMaoza/Codex_Guardian/releases/download/Codex_Guardian-V.0/codex-guardian.tar.gz -o codex-guardian.tar.gz
+mkdir -p ~/.codex/skills
+tar -xzf codex-guardian.tar.gz -C ~/.codex/skills
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py install-check
+```
+
+## Quick start for Codex trouble
+
+When Codex feels unstable, run this from the project folder you are working in:
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py doctor \
   --project . \
-  --recovery-report \
-  --mark-restart \
-  --task "Recover active task" \
-  --touched README.md
+  --hours 1 \
+  --check-reachability \
+  --check-service-status
 ```
 
-When `--task` is set, `watch` writes a `preflight_done` checkpoint before reporting. If it also writes a recovery bundle, that bundle includes the checkpoint. If the current checkpoint is unreadable or overdue, the watch bundle preserves that attention in its README, diagnosis, and resume prompt.
-Use `--doctor` when the watcher should create the full recovery bundle as soon as a failure appears. It implies a recovery bundle and adds `doctor.md`, `status.md`, `reachability.md`, `service-status.md`, `environment.md`, and `connection-triage.md` with matching JSON files.
-When `--check-reachability` makes `watch` actionable and `--recovery-report` is set, the bundle includes `reachability.md` and `reachability.json`.
-When `--check-service-status` makes `watch` actionable and `--recovery-report` is set, the bundle includes `service-status.md`, `service-status.json`, `connection-triage.md`, and `connection-triage.json`.
-When `watch` sees repeated app-state failures and `--mark-restart` is set, it writes `.codex-guardian/restart-marker.json` so `post-restart` can verify the restart afterward. It does not mark restart for transport-only failures. Manual `mark-restart` markers also include structured restart decision metadata so `post-restart` can carry that context forward.
-When project recovery status is what makes `watch` actionable, the JSON report includes the same `status` object and the recovery bundle includes `status.md`, `status.json`, `connection-triage.md`, and `connection-triage.json`.
-
-Run a diagnosis:
+Use this when you want the full recovery bundle immediately:
 
 ```bash
-python3 skills/codex-guardian/scripts/diagnose_codex_streams.py --hours 12
-```
-
-Separate auth/session, app-state, and transport failures:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py health --hours 1
-```
-
-`health` reports `restart_codex_now`, `restart_recommended`, a structured `restart_decision` object, and the same `direct_fix_boundary` used by `connection-triage`: `3/10` direct-fix ceiling, `9/10` recovery-tooling ceiling, highest local recovery command, and the external repair reason. `auth_session` means the first action is to sign in or refresh the Codex session. `restart_codex_now` is the urgent repeated app-state-only rule; a single app-state event preserves state and watches for repeat before restart. Mixed transport and app-state failures use `restart_recommended: true` with `restart_timing: after_state_preserved`.
-Add `--check-reachability` when you also want a live DNS and HTTP/TLS probe in the same report. The health `issue_type` stays log-derived; reachability appears as a separate object and makes the command exit nonzero when the local probe fails.
-Add `--check-service-status` when you also want upstream status evidence in the same report. A degraded upstream status makes `health` exit nonzero; a failed status check is `unknown` and does not prove an outage.
-
-Check whether this machine can resolve and reach the Codex HTTP path:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py reachability
-```
-
-`reachability` checks DNS first, then the configured HTTP or HTTPS endpoint. It reports DNS, TLS, reset, and timeout failures with the same transport families used by `health`. The result describes the current process network context, so sandboxing, proxy, or approval settings can change it. Use `--dns-only` when you want a quick local resolver check without opening an HTTP request.
-
-Check whether the configured upstream status endpoint reports an outage:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py service-status
-```
-
-`service-status` reads a Statuspage-style JSON endpoint, defaulting to OpenAI status. A degraded status means the next action is to preserve state and wait or retry later. A failed status check is reported as `unknown`, not as proof of an upstream outage.
-
-Show what Guardian can locally fix versus what belongs to Codex/OpenAI, app, auth, backend, or network layers:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py connection-triage \
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py recover-now \
   --project . \
   --hours 1
 ```
 
-`connection-triage` reports the immediate health issue type and a separate `recovery_attention` value from the project status, so a clean current log can still point to an unstable post-restart marker or checkpoint problem. It also includes a structured `direct_fix_boundary` with a `3/10` direct-fix ceiling, a `9/10` recovery-tooling ceiling, the highest local recovery command, and the reason true transport/app/backend repair is outside Guardian's scope. The escalation packet names the redacted evidence to preserve when the problem is outside Guardian's local recovery scope.
-Add `--check-reachability` when the boundary report should include live DNS and HTTP/TLS evidence. The health classification stays log-derived, reachability is reported separately, and the command exits nonzero if the local probe fails.
-Add `--check-service-status` when the boundary report should include upstream service evidence. A degraded upstream status appears as `recovery_attention: upstream_degraded`; a failed status check remains `unknown`.
-
-Summarize the current project recovery state:
+Use this before a long Codex task:
 
 ```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py status \
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py preflight \
+  --project . \
+  --task "Describe the work here" \
+  --next-action "What Codex should do first"
+```
+
+Use this after a reconnect or restart:
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py status \
   --project . \
   --hours 1
 ```
 
-`status` reports current health, the active checkpoint, unreadable or overdue checkpoint state, latest recovery bundle, restart marker, and post-restart state when a marker exists. It also includes `fresh_recovery_bundle_recommended` and ordered `next_actions`, so a resumed session knows whether to inspect the checkpoint, create a fresh full bundle, restart Codex, or verify post-restart state next.
+## What it does
 
-Create a health-based action plan:
+Codex Guardian gives you a local safety layer around Codex work:
+
+- It checks Codex logs for connection, compaction, auth, app-state, and no-progress problems.
+- It writes checkpoints before risky work.
+- It creates recovery bundles with a diagnosis, status, redacted event samples, and a resume prompt.
+- It separates local reachability, upstream service status, auth/session trouble, transport failures, and app-state churn.
+- It tells you when restart is the next local move, and when reauth or smaller retry is more appropriate.
+- It avoids treating quoted failure text in assistant output as a real connection failure.
+
+## Pros
+
+- Useful when Codex disconnects in the middle of work.
+- Helps you avoid losing track of what changed.
+- Gives a simple `doctor` command instead of forcing you to inspect logs manually.
+- Makes restart decisions clearer, especially for repeated `unknown_conversation` or mixed failures.
+- Keeps public recovery reports safer by redacting home paths, emails, tokens, conversation IDs, thread IDs, UUID-like IDs, and long opaque IDs.
+- Includes tests, fixture logs, self-checks, and package validation.
+
+## Contra
+
+- It is not a direct fix for Codex app bugs, OpenAI backend issues, auth bugs, WebSocket transport problems, or your local network.
+- It cannot guarantee that a failed Codex task will resume perfectly.
+- It reads local Codex logs, so the diagnosis is only as good as the available logs.
+- It writes recovery files into `.codex-guardian/` inside the project you choose.
+- It is a power tool. If you only need to ask Codex one small question, you probably do not need it.
+
+## Best command for each situation
+
+| Situation | Command |
+| --- | --- |
+| You want one recovery decision | `doctor --project . --hours 1` |
+| Codex cannot connect but logs are unclear | `doctor --project . --hours 1 --check-reachability --check-service-status` |
+| You want a full bundle now | `recover-now --project . --hours 1` |
+| You are about to start a long task | `preflight --project . --task "..." --next-action "..."` |
+| You just restarted Codex | `post-restart --project . --hours 1` |
+| You want to know current recovery state | `status --project . --hours 1` |
+| You only want log classification | `health --hours 1` |
+| You only want endpoint reachability | `reachability` |
+| You only want OpenAI service status | `service-status` |
+
+All commands below assume you are using the installed skill:
 
 ```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py doctor \
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py <command>
+```
+
+If you are running from this repository instead, use:
+
+```bash
+python3 skills/codex-guardian/scripts/codex_guardian.py <command>
+```
+
+## The honest fix boundary
+
+Codex Guardian is recovery tooling, not a patch for Codex internals.
+
+Highest realistic score as direct connection fix: `3/10`.
+
+Highest realistic score as Codex recovery tooling: `9/10`.
+
+It can preserve state, classify the likely failure type, check reachability and service status, produce a resume prompt, and point you to restart or reauth when that is the right local action. The real fix for a broken Codex app state, backend outage, auth defect, WebSocket bug, or network problem has to happen outside this skill.
+
+## Common flows
+
+### Before a long task
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py auto-preflight \
   --project . \
-  --task "Recover active task" \
-  --touched README.md \
-  --mark-restart \
-  --hours 1
+  --task "Build the feature" \
+  --next-action "Inspect the target files first" \
+  --estimated-minutes 20
 ```
 
-Add `--check-reachability` when logs are quiet but Codex still cannot connect. In that mode, `doctor` probes the Codex endpoint, treats local DNS/TLS/HTTP failure as attention, and writes the result into `reachability.md` and `reachability.json` inside the recovery bundle. Add `--check-service-status` when the same one-step decision should include upstream service status; degraded upstream status creates a recovery bundle, while a failed status check remains `unknown`. `watch --check-reachability --recovery-report` uses the same reachability probe to stop early and preserve reachability files.
+`auto-preflight` creates a checkpoint only when the estimate crosses the long-task threshold. The default threshold is 10 minutes.
 
-Add `--task` and `--touched` when `doctor` is the entry point for a longer task. It writes a `preflight_done` checkpoint even when the sampled logs are healthy, and includes that checkpoint if a recovery bundle is needed.
-
-When `doctor` recommends a restart and `--mark-restart` is set, it writes the restart marker before you restart Codex. After restart, verify whether app-state errors continued:
+### When Codex disconnects
 
 ```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py post-restart --project . --hours 1
-```
-
-When a project restart marker exists, `post-restart` expands the effective log lookback if needed so the marker time is covered. It reports `no_activity` when no Codex log activity appears after the marker and `transport_unreliable` when app-state errors stopped but transport errors remain, including DNS, TLS, reset, timeout, and WebSocket transport families. Its JSON and markdown reports include the marker path, source command, issue type, restart timing, and restart decision fields.
-Restart markers written by `watch`, `bundle`, or `doctor` include the source command, issue type, restart timing, and restart reason from the health decision or post-restart status decision.
-
-Create a recovery bundle on demand:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py recover-now \
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py recover-now \
   --project . \
   --hours 1 \
-  --task "Recover active task" \
-  --touched README.md
+  --task "Recover the interrupted task"
 ```
 
-`recover-now` is the shortest path to a full recovery bundle. It writes the doctor-grade bundle now, including status, reachability, service status, environment, connection triage, diagnosis, events, checkpoint when `--task` is set, and a resume prompt. It also writes a restart marker when the health classifier recommends a restart, unless `--no-mark-restart` is set.
-Status, doctor, and connection-triage next actions prefer `recover-now` when they recommend a full recovery bundle.
+Open the generated `.codex-guardian/recovery/.../README.md` first. It tells the next Codex session what to read and what to do next.
 
-Use `bundle --doctor` when you want the same full bundle with the lower-level bundle command:
+### When Codex recommends a restart
 
 ```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py bundle \
-  --project . \
-  --hours 1 \
-  --doctor \
-  --mark-restart \
-  --task "Recover active task" \
-  --touched README.md
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py mark-restart --project .
 ```
 
-Each bundle includes `README.md` and `manifest.json` so a resumed session can see what to open first. With `--doctor`, the bundle also includes `doctor.md`, `doctor.json`, `status.md`, `status.json`, `reachability.md`, `reachability.json`, `service-status.md`, `service-status.json`, `environment.md`, `environment.json`, `connection-triage.md`, and `connection-triage.json`. The status files capture the current checkpoint, latest bundle, restart marker, post-restart state, and next actions for the resumed session. The reachability files capture DNS and HTTP/TLS evidence for the Codex endpoint at bundle time, from the current process network context. The service-status files capture the configured Statuspage-style upstream status and treat failed checks as `unknown`, not as proof of an outage. The environment files capture the Codex home, Python and platform details, Codex CLI presence, probe endpoint, and read-only log source evidence for `logs_2.sqlite` and desktop Codex logs. Use `--reachability-endpoint`, `--reachability-timeout`, `--reachability-dns-only`, `--service-status-endpoint`, and `--service-status-timeout` when the bundle needs specific probe targets. The JSON command response includes the same `status`, `reachability`, and `service_status` objects. The bundle preserves unreadable or overdue current-checkpoint attention in the README, diagnosis, status, doctor artifacts, and resume prompt. In doctor bundles, `resume-prompt.txt` tells the next session to open `status.md` first, then `doctor.md`. With `--task`, it first writes and bundles a `preflight_done` checkpoint; with `--mark-restart`, it writes a restart marker when the health classifier recommends restarting Codex or project status shows post-restart app-state instability.
+Restart Codex, then run:
 
-Run the local fixture soak test:
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py post-restart --project . --hours 1
+```
+
+### When a command is risky
+
+Wrap a non-interactive command so Guardian records the state before and after it runs:
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py wrap \
+  --project . \
+  --task "Run one bounded Codex exec task" \
+  -- codex exec "Do one bounded task and stop with a concise report."
+```
+
+## Command reference
+
+### Diagnose
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py diagnose --hours 12 --format markdown
+```
+
+Summarizes local Codex stream and reconnect failures.
+
+### Watch
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py watch --once --hours 1
+```
+
+Stops when it sees actionable failures. Add `--recovery-report --project .` to write a bundle when a failure appears.
+
+### Health
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py health --hours 1
+```
+
+Classifies the current issue as `auth_session`, `app_state`, `transport`, `mixed`, `compaction`, `no_progress`, or healthy.
+
+### Connection triage
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py connection-triage \
+  --project . \
+  --hours 1 \
+  --check-reachability \
+  --check-service-status
+```
+
+Shows the local recovery actions and the direct-fix boundary.
+
+### Bundle
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py bundle \
+  --project . \
+  --hours 1 \
+  --doctor
+```
+
+Writes a recovery bundle. `--doctor` adds status, reachability, service-status, environment, and connection-triage files.
+
+### Checkpoint
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py checkpoint \
+  --project . \
+  --task "Example task" \
+  --phase write_done \
+  --verified "The edit was made" \
+  --next-action "Run validation"
+```
+
+Writes a durable checkpoint into `.codex-guardian/checkpoints/`.
+
+### Resume prompt
+
+```bash
+python3 ~/.codex/skills/codex-guardian/scripts/codex_guardian.py resume-prompt --project .
+```
+
+Prints a prompt for the next Codex session based on the latest checkpoint.
+
+## Safety and privacy
+
+The diagnostic commands are read-only by default.
+
+Project recovery files are written under:
+
+```text
+.codex-guardian/
+```
+
+Do not publish raw `.codex` logs, sessions, databases, auth files, or memory files.
+
+Public reports redact home paths, tokens, emails, conversation IDs, thread IDs, UUID-like IDs, and long opaque IDs. Still review any report before sharing it outside your machine.
+
+## For maintainers
+
+Run the test suite:
+
+```bash
+python3 -m unittest tests/test_codex_guardian.py
+```
+
+Validate the skill files and frontmatter:
+
+```bash
+python3 skills/codex-guardian/scripts/codex_guardian.py validate-skill --skill-dir skills/codex-guardian
+```
+
+Run the fixture soak test:
 
 ```bash
 python3 skills/codex-guardian/scripts/codex_guardian.py self-test
 ```
 
-`self-test` exercises the inline soak log plus `skills/codex-guardian/fixtures/redacted-real-log-corpus.json`, a redacted real-log-shaped corpus covering transport, retry warnings, startup prewarm failures, app-state, auth/session, compaction, no-progress, and quoted payload false positives from assistant, request, and goal text. It now fails if the corpus stops covering required classifier families, loses the real-log-shaped targets that made earlier bugs visible, or drops the false-positive fixtures that prevent quoted text from being counted as failures. It also writes basic and doctor recovery bundles so install checks cover the full recovery artifact path.
-
-Create a preflight checkpoint before substantial work:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py preflight \
-  --project . \
-  --task "Example task" \
-  --next-action "Edit one named file and verify it" \
-  --touched README.md
-```
-
-Preflight records git state and whether each touched path exists, is missing, or points outside the project.
-
-Let Guardian decide whether an estimated task is long enough to need preflight:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py auto-preflight \
-  --project . \
-  --task "Example task" \
-  --next-action "Edit one named file and verify it" \
-  --estimated-minutes 20 \
-  --touched README.md
-```
-
-`auto-preflight` writes the same `preflight_done` checkpoint when `--estimated-minutes` is at or above `--threshold-minutes`, defaulting to 10. For shorter tasks it reports `created_preflight_checkpoint: false` and leaves the current checkpoint untouched. Use `--force` when a small task still needs a checkpoint because the state would be costly to lose.
-
-Create a manual checkpoint after a slice:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py checkpoint \
-  --project . \
-  --task "Example task" \
-  --phase preflight_done \
-  --verified "No files edited yet" \
-  --next-action "Edit only the named file and verify it"
-```
-
-Record and compare a no-progress fingerprint:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py checkpoint \
-  --project . \
-  --task "Example task" \
-  --phase write_started \
-  --next-action "Edit README.md" \
-  --touched README.md \
-  --fingerprint
-
-python3 skills/codex-guardian/scripts/codex_guardian.py checkpoint \
-  --project . \
-  --task "Example task" \
-  --phase write_done \
-  --next-action "Report result" \
-  --touched README.md \
-  --fingerprint \
-  --compare-fingerprint
-```
-
-Generate a recovery prompt:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py resume-prompt --project .
-```
-
-Wrap a non-interactive command:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py wrap \
-  --project . \
-  --task "Guarded command" \
-  --touched README.md \
-  -- codex exec "Do one bounded task and stop."
-```
-
-`wrap` automatically records a preflight checkpoint before the command runs, including git status, touched-file facts, the command, and a checkpoint deadline.
-
-## Safety
-
-The diagnostic commands are read-only by default. Checkpoints are written under `.codex-guardian/` in the project you choose.
-
-Use 10 to 15 minute slices for long tasks. A reconnect, compaction failure, or WebSocket drop should lose at most one slice of ambiguous state.
-
-Codex Guardian cannot directly repair Codex app, OpenAI backend, auth, network, or WebSocket internals. Its direct-fix boundary is local recovery: diagnose the failure class, preserve state, point auth/session failures to reauth, check local reachability and upstream status when asked, guide restart decisions, and create a safe resume path.
-
-Use `doctor` when you want one decision point. It runs the health classifier, checks checkpoint state and project recovery status, creates a recovery bundle when attention is needed, and prints the next local actions. Add `--check-reachability` when local endpoint reachability should affect the decision. Add `--check-service-status` when upstream service status should affect the decision. Degraded upstream status counts as attention; a failed status check stays `unknown` and does not prove an outage. Add `--mark-restart` when current health or post-restart status recommends a restart and you want the post-restart check seeded automatically. It does not restart apps or alter Codex internals.
-
-When `doctor` creates a bundle, its JSON response includes the current `status` object and the same `service_status` object written into the bundle. When `bundle --doctor` creates a bundle, its JSON response includes the same `status`, `reachability`, and `service_status` objects written into the bundle. If the reachability probe fails, the ordered actions point you to `reachability.md` before retrying Codex. Open `status.md` for the current recovery state, then use `doctor.md` for the ordered local actions. The bundle also includes JSON copies, reachability files, service-status files, environment files, connection triage files, diagnosis, events, checkpoint, and resume prompt.
-
-Public reports redact home paths, tokens, emails, conversation IDs, thread IDs, UUID-like IDs, and long opaque IDs.
-
-Do not publish raw `.codex` logs, sessions, databases, auth files, or memory files. Use `skills/codex-guardian/references/privacy-redaction.md` before sharing diagnostics.
-
-## Install
-
-Check whether the skill is installed:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py install-check
-```
-
-`install-check` verifies that the installed skill has the required runnable scripts, references, and redacted fixture corpus, not just `SKILL.md`.
-
-Install it into `~/.codex/skills/codex-guardian` only when missing:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py install-check --install
-```
-
-Use `--force` only when you intentionally want to overwrite an existing installed copy.
-
-Validate the required skill files and frontmatter without PyYAML:
-
-```bash
-python3 skills/codex-guardian/scripts/codex_guardian.py validate-skill
-```
-
-Build a clean install archive:
+Build the release package:
 
 ```bash
 python3 skills/codex-guardian/scripts/codex_guardian.py package --output-dir dist
 ```
 
-The package command writes `codex-guardian.tar.gz` and `codex-guardian-package.json`, excluding `.DS_Store`, `__pycache__`, and `.pyc` files. The manifest records required skill files and the command fails before packaging if any required runtime, reference, or fixture file is missing.
+The package command writes:
+
+```text
+dist/codex-guardian.tar.gz
+dist/codex-guardian-package.json
+```
+
+The package excludes `.DS_Store`, `__pycache__`, and `.pyc` files. It fails before packaging if a required runtime, reference, or fixture file is missing.
+
+## What ships in this repo
+
+```text
+skills/codex-guardian/SKILL.md
+skills/codex-guardian/scripts/codex_guardian.py
+skills/codex-guardian/scripts/diagnose_codex_streams.py
+skills/codex-guardian/fixtures/redacted-real-log-corpus.json
+skills/codex-guardian/references/failure-taxonomy.md
+skills/codex-guardian/references/privacy-redaction.md
+skills/codex-guardian/references/recovery-prompts.md
+tests/test_codex_guardian.py
+```
