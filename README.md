@@ -307,15 +307,4 @@ dist/codex-guardian-package.json
 
 The package excludes `.DS_Store`, `__pycache__`, and `.pyc` files. It fails before packaging if a required runtime, reference, or fixture file is missing.
 
-## What ships in this repo
-
-```text
-skills/codex-guardian/SKILL.md
-skills/codex-guardian/scripts/codex_guardian.py
-skills/codex-guardian/scripts/diagnose_codex_streams.py
-skills/codex-guardian/fixtures/redacted-real-log-corpus.json
-skills/codex-guardian/references/failure-taxonomy.md
-skills/codex-guardian/references/privacy-redaction.md
-skills/codex-guardian/references/recovery-prompts.md
-tests/test_codex_guardian.py
-```
+It's Free, use it to built with codex, Happy CODEX MAXXING!!
